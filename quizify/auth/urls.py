@@ -6,6 +6,7 @@ app_name = 'auth'
 urlpatterns = [
     path("login", views.AuthenticateUser.as_view(), name="login"),
     path("register", views.RegisterView.as_view(), name="register"),
+    path("google", views.GoogleLoginView.as_view(), name="google"),
     path("logout", views.LogoutView.as_view(), name="logout"),
     path("profile", views.ProfileView.as_view(), name="profile"),
     path("refresh", views.RefreshTokenView.as_view(), name="refresh"),

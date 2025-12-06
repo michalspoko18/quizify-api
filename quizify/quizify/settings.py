@@ -171,3 +171,9 @@ SPECTACULAR_SETTINGS = {
     'DESCRIPTION': 'API for quizzes, auth and ranking',
     'VERSION': '1.0.0',
 }
+
+# Authenticate users by email
+AUTHENTICATION_BACKENDS = [
+    'auth.backends.EmailBackend',
+    'django.contrib.auth.backends.ModelBackend',
+]
