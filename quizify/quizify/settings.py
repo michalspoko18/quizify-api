@@ -41,6 +41,7 @@ INSTALLED_APPS = [
     'rest_framework',
     'drf_spectacular',
     'auth.apps.AuthConfig',
+    'quizzes.apps.QuizzesConfig',
 ]
 
 MIDDLEWARE = [
