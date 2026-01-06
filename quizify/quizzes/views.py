@@ -1,32 +1,23 @@
-import json
-from pathlib import Path
-from typing import Dict, Any
-
+from django.shortcuts import get_object_or_404
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status, permissions
 
-
-DATA_PATH = Path(__file__).resolve().parent / "data" / "quizzes.json"
-
-
-def load_quizzes() -> list[Dict[str, Any]]:
-    with open(DATA_PATH, "r", encoding="utf-8") as f:
-        return json.load(f)
+from .models import Quiz
 
 
 class QuizListView(APIView):
     permission_classes = [permissions.AllowAny]
 
     def get(self, request):
-        quizzes = load_quizzes()
+        quizzes = Quiz.objects.all()
         summarized = [
             {
-                "id": q["id"],
-                "title": q["title"],
-                "description": q.get("description"),
+                "id": quiz.id,
+                "title": quiz.title,
+                "description": quiz.description,
             }
-            for q in quizzes
+            for quiz in quizzes
         ]
         return Response(summarized, status=status.HTTP_200_OK)
 
@@ -35,27 +26,41 @@ class QuizDetailView(APIView):
     permission_classes = [permissions.AllowAny]
 
     def get(self, request, quiz_id: int):
-        quizzes = load_quizzes()
-        for q in quizzes:
-            if q.get("id") == quiz_id:
-                return Response(q, status=status.HTTP_200_OK)
-        return Response(
-            {"message": "Nie znaleziono quizu."},
-            status=status.HTTP_404_NOT_FOUND,
-        )
+        quiz = get_object_or_404(Quiz.objects.prefetch_related(
+            "questions__answers"
+        ), pk=quiz_id)
+
+        payload = {
+            "id": quiz.id,
+            "title": quiz.title,
+            "description": quiz.description,
+            "questions": [
+                {
+                    "id": question.id,
+                    "question": question.text,
+                    "answers": [
+                            {
+                                "id": answer.id,
+                                "text": answer.text,
+                            }
+                        for answer in question.answers.all()
+                    ],
+                }
+                for question in quiz.questions.all()
+            ],
+        }
+
+        return Response(payload, status=status.HTTP_200_OK)
 
 
 class QuizAnswerView(APIView):
     permission_classes = [permissions.AllowAny]
 
     def post(self, request, quiz_id: int):
-        quizzes = load_quizzes()
-        quiz = next((q for q in quizzes if q.get("id") == quiz_id), None)
-        if not quiz:
-            return Response(
-                {"message": "Nie znaleziono quizu."},
-                status=status.HTTP_404_NOT_FOUND,
-            )
+        quiz = get_object_or_404(
+            Quiz.objects.prefetch_related("questions__answers"),
+            pk=quiz_id,
+        )
 
         # Accept payload:
         # - { answers: [{ questionId, answerId }, ...] }
@@ -70,30 +75,47 @@ class QuizAnswerView(APIView):
         elif isinstance(submitted, dict):
             answers_map = submitted
 
-        total = len(quiz.get("questions", []))
+        # Normalize keys and values: JSON object keys become strings,
+        # but question IDs in DB are integers. Convert numeric-string keys
+        # and numeric-string values to ints for correct matching.
+        normalized = {}
+        if isinstance(answers_map, dict):
+            for k, v in answers_map.items():
+                try:
+                    key = int(k)
+                except (TypeError, ValueError):
+                    key = k
+                try:
+                    val = int(v)
+                except (TypeError, ValueError):
+                    val = v
+                normalized[key] = val
+        answers_map = normalized
+
+        total = quiz.questions.count()
         correct = 0
         incorrect_details = []
 
-        for q in quiz.get("questions", []):
-            selected = answers_map.get(q.get("id"))
+        for question in quiz.questions.all():
+            selected = answers_map.get(question.id)
             if selected is None:
                 continue
             is_correct = False
             correct_answer_text = None
             user_answer_text = None
-            for a in q.get("answers", []):
-                if a.get("isCorrect"):
-                    correct_answer_text = a.get("text")
-                if a.get("id") == selected:
-                    user_answer_text = a.get("text")
-                    if a.get("isCorrect"):
+            for answer in question.answers.all():
+                if answer.is_correct:
+                    correct_answer_text = answer.text
+                if answer.id == selected:
+                    user_answer_text = answer.text
+                    if answer.is_correct:
                         is_correct = True
             if is_correct:
                 correct += 1
             else:
                 incorrect_details.append(
                     {
-                        "question": q.get("question"),
+                        "question": question.text,
                         "userAnswer": user_answer_text,
                         "correctAnswer": correct_answer_text,
                     }
