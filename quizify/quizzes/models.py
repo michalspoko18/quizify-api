@@ -35,8 +35,9 @@ class Answer(models.Model):
 
 class UserQuizResult(models.Model):
     user = models.ForeignKey(
-        settings.AUTH_USER_MODEL, on_delete=models.CASCADE
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, null=True, blank=True
     )
+    external_user_id = models.CharField(max_length=255, null=True, blank=True)
     quiz = models.ForeignKey(Quiz, on_delete=models.CASCADE)
     percentage = models.PositiveIntegerField()
     correct_answers = models.PositiveIntegerField()

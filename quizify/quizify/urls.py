@@ -21,6 +21,8 @@ from drf_spectacular.views import (
     SpectacularSwaggerView,
     SpectacularRedocView,
 )
+from quizzes.views import RankingView
+from auth.views import MeView
 
 urlpatterns = [
     path('admin/', admin.site.urls),
@@ -37,4 +39,6 @@ urlpatterns = [
         SpectacularRedocView.as_view(url_name='schema'),
         name='redoc',
     ),
+    path('api/ranking', RankingView.as_view(), name='ranking'),
+    path('api/me', MeView.as_view(), name='me'),
 ]

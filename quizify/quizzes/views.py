@@ -3,7 +3,7 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status, permissions
 
-from .models import Quiz
+from .models import Quiz, UserQuizResult
 
 
 class QuizListView(APIView):
@@ -131,4 +131,59 @@ class QuizAnswerView(APIView):
             "passed": percentage >= 50,
             "incorrectDetails": incorrect_details,
         }
+        # Persist result (allow anonymous results)
+        try:
+            UserQuizResult.objects.create(
+                user=(request.user if getattr(request.user, 'is_authenticated', False) else None),
+                external_user_id=request.data.get('userId') or request.data.get('user_id'),
+                quiz=quiz,
+                percentage=round(percentage),
+                correct_answers=correct,
+                total_questions=total,
+                passed=percentage >= 50,
+            )
+        except Exception:
+            # Don't fail the whole request if saving result fails
+            pass
+
         return Response(result, status=status.HTTP_200_OK)
+
+
+class RankingView(APIView):
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        # Expected payload: { quizId, score/percentage, correctAnswers, totalQuestions, passed }
+        data = request.data or {}
+        quiz_id = data.get("quizId") or data.get("quiz_id")
+        if not quiz_id:
+            return Response({"message": "quizId is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            quiz = Quiz.objects.get(pk=quiz_id)
+        except Quiz.DoesNotExist:
+            return Response({"message": "Quiz not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        percentage = data.get("percentage") or data.get("score") or 0
+        correct_answers = data.get("correctAnswers") or data.get("correct_answers") or 0
+        total_questions = data.get("totalQuestions") or data.get("total_questions") or 0
+        passed = bool(data.get("passed", percentage >= 50))
+
+        result = UserQuizResult.objects.create(
+            user=(request.user if getattr(request.user, 'is_authenticated', False) else None),
+            external_user_id=data.get('userId') or data.get('user_id'),
+            quiz=quiz,
+            percentage=int(percentage),
+            correct_answers=int(correct_answers),
+            total_questions=int(total_questions),
+            passed=passed,
+        )
+
+        return Response({
+            "id": result.id,
+            "quizId": quiz.id,
+            "percentage": result.percentage,
+            "correctAnswers": result.correct_answers,
+            "totalQuestions": result.total_questions,
+            "passed": result.passed,
+        }, status=status.HTTP_201_CREATED)
