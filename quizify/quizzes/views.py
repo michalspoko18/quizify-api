@@ -4,6 +4,8 @@ from rest_framework.response import Response
 from rest_framework import status, permissions
 
 from .models import Quiz, UserQuizResult
+from django.db.models import Count, Avg, Sum, Max
+from django.contrib.auth import get_user_model
 
 
 class QuizListView(APIView):
@@ -187,3 +189,123 @@ class RankingView(APIView):
             "totalQuestions": result.total_questions,
             "passed": result.passed,
         }, status=status.HTTP_201_CREATED)
+
+    def get(self, request):
+        """Return aggregated ranking data.
+
+        Query params:
+        - type: 'global' (default), 'me', 'popular'
+        - limit: integer limit for lists
+        - userId: external user id for 'me' lookup (optional)
+        """
+        qtype = request.query_params.get("type", "global")
+        try:
+            limit = int(request.query_params.get("limit", 10) or 10)
+        except (TypeError, ValueError):
+            limit = 10
+
+        User = get_user_model()
+
+        if qtype == "popular":
+            # Most popular quizzes
+            qs = (
+                UserQuizResult.objects.values("quiz__id", "quiz__title")
+                .annotate(times_completed=Count("id"), average_score=Avg("percentage"))
+                .order_by("-times_completed")[:limit]
+            )
+
+            payload = [
+                {
+                    "quizId": item["quiz__id"],
+                    "quizTitle": item.get("quiz__title"),
+                    "timesCompleted": item.get("times_completed", 0),
+                    "averageScore": round(item.get("average_score") or 0),
+                }
+                for item in qs
+            ]
+
+            return Response(payload, status=status.HTTP_200_OK)
+
+        if qtype == "me":
+            # User stats for authenticated user or external userId
+            user = request.user if getattr(request.user, "is_authenticated", False) else None
+            external = request.query_params.get("userId") or request.query_params.get("user_id")
+
+            if user:
+                qs = UserQuizResult.objects.filter(user=user)
+            elif external:
+                qs = UserQuizResult.objects.filter(external_user_id=external)
+            else:
+                return Response(
+                    {
+                        "totalQuizzes": 0,
+                        "averageScore": 0,
+                        "bestScore": 0,
+                        "totalCorrect": 0,
+                        "totalQuestions": 0,
+                    },
+                    status=status.HTTP_200_OK,
+                )
+
+            aggs = qs.aggregate(
+                total=Count("id"),
+                average=Avg("percentage"),
+                best=Max("percentage"),
+                correct=Sum("correct_answers"),
+                questions=Sum("total_questions"),
+            )
+
+            payload = {
+                "totalQuizzes": aggs.get("total") or 0,
+                "averageScore": round(aggs.get("average") or 0),
+                "bestScore": aggs.get("best") or 0,
+                "totalCorrect": aggs.get("correct") or 0,
+                "totalQuestions": aggs.get("questions") or 0,
+            }
+
+            return Response(payload, status=status.HTTP_200_OK)
+
+        # default: global ranking
+        # Group by external_user_id when present, otherwise by user id
+        # We'll build a map keyed by a stable identifier
+        results = (
+            UserQuizResult.objects.values("external_user_id", "user")
+            .annotate(quizzes_completed=Count("id"), average_score=Avg("percentage"), total_score=Sum("percentage"))
+            .order_by("-average_score", "-total_score")
+        )
+
+        payload = []
+        for item in results:
+            if len(payload) >= limit:
+                break
+            ext = item.get("external_user_id")
+            user_pk = item.get("user")
+            if ext:
+                userId = ext
+                userName = None
+                userNick = None
+            elif user_pk:
+                userId = f"user:{user_pk}"
+                try:
+                    u = User.objects.filter(pk=user_pk).first()
+                    userName = getattr(u, "username", None) if u else None
+                    userNick = getattr(u, "nick", None) if u else None
+                except Exception:
+                    userName = None
+                    userNick = None
+            else:
+                # skip completely anonymous entries without any identifier
+                continue
+
+            payload.append(
+                {
+                    "userId": userId,
+                    "userName": userName,
+                    "userNick": userNick,
+                    "quizzesCompleted": item.get("quizzes_completed", 0),
+                    "averageScore": round(item.get("average_score") or 0),
+                    "totalScore": int(item.get("total_score") or 0),
+                }
+            )
+
+        return Response(payload, status=status.HTTP_200_OK)
