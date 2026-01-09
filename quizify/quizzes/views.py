@@ -2,6 +2,7 @@ from django.shortcuts import get_object_or_404
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status, permissions
+from .serializers import QuizSerializer
 
 from .models import Quiz, UserQuizResult
 from django.db.models import Count, Avg, Sum, Max
@@ -9,7 +10,7 @@ from django.contrib.auth import get_user_model
 
 
 class QuizListView(APIView):
-    permission_classes = [permissions.AllowAny]
+    permission_classes = [permissions.IsAuthenticatedOrReadOnly]
 
     def get(self, request):
         quizzes = Quiz.objects.all()
@@ -23,9 +24,20 @@ class QuizListView(APIView):
         ]
         return Response(summarized, status=status.HTTP_200_OK)
 
+    def post(self, request):
+        serializer = QuizSerializer(data=request.data, context={"user": request.user})
+        if not request.user or not getattr(request.user, "is_authenticated", False):
+            return Response({"detail": "Authentication credentials were not provided."}, status=status.HTTP_401_UNAUTHORIZED)
+
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        quiz = serializer.save()
+        return Response(QuizSerializer(quiz).data, status=status.HTTP_201_CREATED)
+
 
 class QuizDetailView(APIView):
-    permission_classes = [permissions.AllowAny]
+    permission_classes = [permissions.IsAuthenticatedOrReadOnly]
 
     def get(self, request, quiz_id: int):
         quiz = get_object_or_404(Quiz.objects.prefetch_related(
@@ -53,6 +65,27 @@ class QuizDetailView(APIView):
         }
 
         return Response(payload, status=status.HTTP_200_OK)
+
+    def put(self, request, quiz_id: int):
+        quiz = get_object_or_404(Quiz.objects.prefetch_related("questions__answers"), pk=quiz_id)
+        # owner check
+        if not getattr(request.user, "is_authenticated", False) or quiz.owner_id != getattr(request.user, "id", None):
+            return Response({"detail": "You do not have permission to modify this quiz."}, status=status.HTTP_403_FORBIDDEN)
+
+        serializer = QuizSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        quiz = serializer.update(quiz, serializer.validated_data)
+        return Response(QuizSerializer(quiz).data, status=status.HTTP_200_OK)
+
+    def delete(self, request, quiz_id: int):
+        quiz = get_object_or_404(Quiz, pk=quiz_id)
+        if not getattr(request.user, "is_authenticated", False) or quiz.owner_id != getattr(request.user, "id", None):
+            return Response({"detail": "You do not have permission to delete this quiz."}, status=status.HTTP_403_FORBIDDEN)
+
+        quiz.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class QuizAnswerView(APIView):
