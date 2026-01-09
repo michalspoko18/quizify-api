@@ -25,8 +25,12 @@ SECRET_KEY = 'django-insecure-whqmm!_jjjkk-!5a=8r7p$*zp)&#6=re_!-j-!u_cswazo95d+
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = [
+    "localhost",
+    "127.0.0.1",
+]
 
+CORS_ORIGIN_ALLOW_ALL = True
 
 # Application definition
 
@@ -37,9 +41,15 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    'corsheaders',
+    'rest_framework',
+    'drf_spectacular',
+    'auth.apps.AuthConfig',
+    'quizzes.apps.QuizzesConfig',
 ]
 
 MIDDLEWARE = [
+    'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -120,3 +130,55 @@ STATIC_URL = 'static/'
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+# CORS configuration
+CORS_ALLOWED_ORIGINS = [
+    "http://localhost:3000",
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+]
+
+# Allow sending cookies for session authentication
+CORS_ALLOW_CREDENTIALS = True
+
+# Explicitly allow headers commonly used by the frontend
+CORS_ALLOW_HEADERS = (
+    'accept',
+    'accept-encoding',
+    'authorization',
+    'content-type',
+    'dnt',
+    'origin',
+    'user-agent',
+    'x-requested-with',
+)
+
+# Allowed HTTP methods for CORS
+CORS_ALLOW_METHODS = (
+    'GET',
+    'POST',
+    'PUT',
+    'PATCH',
+    'DELETE',
+    'OPTIONS',
+)
+
+# Custom user model
+AUTH_USER_MODEL = 'quizify_auth.User'
+
+# DRF and Spectacular
+REST_FRAMEWORK = {
+    'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
+}
+
+SPECTACULAR_SETTINGS = {
+    'TITLE': 'Quizify API',
+    'DESCRIPTION': 'API for quizzes, auth and ranking',
+    'VERSION': '1.0.0',
+}
+
+# Authenticate users by email
+AUTHENTICATION_BACKENDS = [
+    'auth.backends.EmailBackend',
+    'django.contrib.auth.backends.ModelBackend',
+]
