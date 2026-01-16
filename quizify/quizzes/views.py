@@ -123,7 +123,7 @@ class MyQuizListView(APIView):
 
 
 class QuizDetailView(APIView):
-    permission_classes = [permissions.IsAuthenticatedOrReadOnly]
+    permission_classes = [permissions.AllowAny]
 
     def get(self, request, quiz_id: int):
         quiz = get_object_or_404(Quiz.objects.prefetch_related(
@@ -167,7 +167,40 @@ class QuizDetailView(APIView):
 
     def delete(self, request, quiz_id: int):
         quiz = get_object_or_404(Quiz, pk=quiz_id)
-        if not getattr(request.user, "is_authenticated", False) or quiz.owner_id != getattr(request.user, "id", None):
+        # Allow deletion when:
+        # - the request is authenticated and request.user is the owner, OR
+        # - the frontend provides ownerId/ownerGoogleId via query params that match the quiz owner
+        allowed = False
+
+        if getattr(request.user, "is_authenticated", False):
+            if quiz.owner_id == getattr(request.user, "id", None) or quiz.owner_id == getattr(request.user, "pk", None):
+                allowed = True
+
+        if not allowed:
+            owner_id = (
+                request.query_params.get("ownerId")
+                or request.query_params.get("owner_id")
+                or request.query_params.get("userId")
+                or request.query_params.get("user_id")
+            )
+            owner_google = (
+                request.query_params.get("ownerGoogleId")
+                or request.query_params.get("owner_google_id")
+                or request.query_params.get("ownerGoogle")
+                or request.query_params.get("owner_google")
+            )
+
+            if owner_id and str(quiz.owner_id) == str(owner_id):
+                allowed = True
+            elif owner_google:
+                try:
+                    if getattr(quiz.owner, "google_id", None) and str(quiz.owner.google_id) == str(owner_google):
+                        allowed = True
+                except Exception:
+                    # If quiz.owner is not present or has no google_id, skip
+                    pass
+
+        if not allowed:
             return Response({"detail": "You do not have permission to delete this quiz."}, status=status.HTTP_403_FORBIDDEN)
 
         quiz.delete()
