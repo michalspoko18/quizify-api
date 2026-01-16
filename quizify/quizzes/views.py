@@ -14,12 +14,13 @@ class QuizListView(APIView):
     permission_classes = [permissions.AllowAny]
 
     def get(self, request):
-        quizzes = Quiz.objects.all()
+        quizzes = Quiz.objects.annotate(questions_count=Count("questions")).all()
         summarized = [
             {
                 "id": quiz.id,
                 "title": quiz.title,
                 "description": quiz.description,
+                "questionsCount": getattr(quiz, "questions_count", 0),
             }
             for quiz in quizzes
         ]
