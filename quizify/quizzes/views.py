@@ -7,10 +7,11 @@ from .serializers import QuizSerializer
 from .models import Quiz, UserQuizResult
 from django.db.models import Count, Avg, Sum, Max
 from django.contrib.auth import get_user_model
+from auth.serializers import UserSerializer
 
 
 class QuizListView(APIView):
-    permission_classes = [permissions.IsAuthenticatedOrReadOnly]
+    permission_classes = [permissions.AllowAny]
 
     def get(self, request):
         quizzes = Quiz.objects.all()
@@ -25,15 +26,100 @@ class QuizListView(APIView):
         return Response(summarized, status=status.HTTP_200_OK)
 
     def post(self, request):
-        serializer = QuizSerializer(data=request.data, context={"user": request.user})
-        if not request.user or not getattr(request.user, "is_authenticated", False):
-            return Response({"detail": "Authentication credentials were not provided."}, status=status.HTTP_401_UNAUTHORIZED)
+        owner = None
+        # Prefer authenticated user
+        if getattr(request.user, "is_authenticated", False):
+            owner = request.user
+        else:
+            # Allow frontend to supply owner id in request payload
+            owner_id = (
+                request.data.get("ownerId")
+                or request.data.get("owner_id")
+                or request.data.get("userId")
+                or request.data.get("user_id")
+            )
+            # Also accept ownerGoogleId (frontend may supply Google `sub`)
+            owner_google = (
+                request.data.get("ownerGoogleId")
+                or request.data.get("owner_google_id")
+                or request.data.get("ownerGoogle")
+                or request.data.get("owner_google")
+            )
+            if owner_id:
+                try:
+                    User = get_user_model()
+                    owner = User.objects.filter(pk=owner_id).first()
+                except Exception:
+                    owner = None
+            # If owner not found by PK, try resolving by Google id
+            if not owner and owner_google:
+                try:
+                    User = get_user_model()
+                    owner = User.objects.filter(google_id=owner_google).first()
+                except Exception:
+                    owner = None
+
+        if not owner:
+            return Response({"detail": "Owner id is required when not authenticated."}, status=status.HTTP_400_BAD_REQUEST)
+
+        serializer = QuizSerializer(data=request.data, context={"user": owner})
 
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
         quiz = serializer.save()
         return Response(QuizSerializer(quiz).data, status=status.HTTP_201_CREATED)
+
+
+class MyQuizListView(APIView):
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request):
+        owner = request.user if getattr(request.user, "is_authenticated", False) else None
+        if not owner:
+            owner_id = (
+                request.query_params.get("ownerId")
+                or request.query_params.get("owner_id")
+                or request.query_params.get("userId")
+                or request.query_params.get("user_id")
+            )
+            owner_google = (
+                request.query_params.get("ownerGoogleId")
+                or request.query_params.get("owner_google_id")
+                or request.query_params.get("ownerGoogle")
+                or request.query_params.get("owner_google")
+            )
+
+            User = get_user_model()
+            if owner_id:
+                owner = User.objects.filter(pk=owner_id).first()
+            if not owner and owner_google:
+                owner = User.objects.filter(google_id=owner_google).first()
+
+        if not owner:
+            return Response(
+                {"detail": "Owner id is required when not authenticated."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        quizzes = (
+            Quiz.objects.filter(owner=owner)
+            .annotate(questions_count=Count("questions"))
+            .order_by("-created_at")
+        )
+
+        payload = [
+            {
+                "id": quiz.id,
+                "title": quiz.title,
+                "description": quiz.description,
+                "owner": quiz.owner_id,
+                "questionsCount": getattr(quiz, "questions_count", 0),
+            }
+            for quiz in quizzes
+        ]
+
+        return Response(payload, status=status.HTTP_200_OK)
 
 
 class QuizDetailView(APIView):
@@ -303,7 +389,11 @@ class RankingView(APIView):
         # We'll build a map keyed by a stable identifier
         results = (
             UserQuizResult.objects.values("external_user_id", "user")
-            .annotate(quizzes_completed=Count("id"), average_score=Avg("percentage"), total_score=Sum("percentage"))
+            .annotate(
+                quizzes_completed=Count("id"),
+                average_score=Avg("percentage"),
+                total_score=Sum("percentage"),
+            )
             .order_by("-average_score", "-total_score")
         )
 
@@ -313,16 +403,30 @@ class RankingView(APIView):
                 break
             ext = item.get("external_user_id")
             user_pk = item.get("user")
+
+            userId = None
+            userName = None
+            userNick = None
+
             if ext:
+                # External identifier (e.g. Google `sub`) — try to resolve to a local User
                 userId = ext
-                userName = None
-                userNick = None
+                try:
+                    u = User.objects.filter(google_id=ext).first()
+                    if u:
+                        userName = getattr(u, "email", None) or getattr(u, "username", None)
+                        userNick = UserSerializer(u).data.get("nick")
+                except Exception:
+                    userName = None
+                    userNick = None
             elif user_pk:
-                userId = f"user:{user_pk}"
+                # Use plain string PK to match frontend `store.sub`
+                userId = str(user_pk)
                 try:
                     u = User.objects.filter(pk=user_pk).first()
-                    userName = getattr(u, "username", None) if u else None
-                    userNick = getattr(u, "nick", None) if u else None
+                    if u:
+                        userName = getattr(u, "email", None) or getattr(u, "username", None)
+                        userNick = UserSerializer(u).data.get("nick")
                 except Exception:
                     userName = None
                     userNick = None
