@@ -11,7 +11,7 @@ from auth.serializers import UserSerializer
 
 
 class QuizListView(APIView):
-    permission_classes = [permissions.AllowAny]
+    permission_classes = [permissions.IsAuthenticatedOrReadOnly]
 
     def get(self, request):
         quizzes = Quiz.objects.annotate(questions_count=Count("questions")).all()
@@ -27,43 +27,16 @@ class QuizListView(APIView):
         return Response(summarized, status=status.HTTP_200_OK)
 
     def post(self, request):
-        owner = None
-        # Prefer authenticated user
-        if getattr(request.user, "is_authenticated", False):
-            owner = request.user
-        else:
-            # Allow frontend to supply owner id in request payload
-            owner_id = (
-                request.data.get("ownerId")
-                or request.data.get("owner_id")
-                or request.data.get("userId")
-                or request.data.get("user_id")
+        if not getattr(request.user, "is_authenticated", False):
+            return Response(
+                {"detail": "Authentication required."},
+                status=status.HTTP_401_UNAUTHORIZED,
             )
-            # Also accept ownerGoogleId (frontend may supply Google `sub`)
-            owner_google = (
-                request.data.get("ownerGoogleId")
-                or request.data.get("owner_google_id")
-                or request.data.get("ownerGoogle")
-                or request.data.get("owner_google")
-            )
-            if owner_id:
-                try:
-                    User = get_user_model()
-                    owner = User.objects.filter(pk=owner_id).first()
-                except Exception:
-                    owner = None
-            # If owner not found by PK, try resolving by Google id
-            if not owner and owner_google:
-                try:
-                    User = get_user_model()
-                    owner = User.objects.filter(google_id=owner_google).first()
-                except Exception:
-                    owner = None
 
-        if not owner:
-            return Response({"detail": "Owner id is required when not authenticated."}, status=status.HTTP_400_BAD_REQUEST)
-
-        serializer = QuizSerializer(data=request.data, context={"user": owner})
+        serializer = QuizSerializer(
+            data=request.data,
+            context={"user": request.user},
+        )
 
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
@@ -73,35 +46,10 @@ class QuizListView(APIView):
 
 
 class MyQuizListView(APIView):
-    permission_classes = [permissions.AllowAny]
+    permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        owner = request.user if getattr(request.user, "is_authenticated", False) else None
-        if not owner:
-            owner_id = (
-                request.query_params.get("ownerId")
-                or request.query_params.get("owner_id")
-                or request.query_params.get("userId")
-                or request.query_params.get("user_id")
-            )
-            owner_google = (
-                request.query_params.get("ownerGoogleId")
-                or request.query_params.get("owner_google_id")
-                or request.query_params.get("ownerGoogle")
-                or request.query_params.get("owner_google")
-            )
-
-            User = get_user_model()
-            if owner_id:
-                owner = User.objects.filter(pk=owner_id).first()
-            if not owner and owner_google:
-                owner = User.objects.filter(google_id=owner_google).first()
-
-        if not owner:
-            return Response(
-                {"detail": "Owner id is required when not authenticated."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        owner = request.user
 
         quizzes = (
             Quiz.objects.filter(owner=owner)
@@ -124,7 +72,7 @@ class MyQuizListView(APIView):
 
 
 class QuizDetailView(APIView):
-    permission_classes = [permissions.AllowAny]
+    permission_classes = [permissions.IsAuthenticatedOrReadOnly]
 
     def get(self, request, quiz_id: int):
         quiz = get_object_or_404(Quiz.objects.prefetch_related(
@@ -168,40 +116,13 @@ class QuizDetailView(APIView):
 
     def delete(self, request, quiz_id: int):
         quiz = get_object_or_404(Quiz, pk=quiz_id)
-        # Allow deletion when:
-        # - the request is authenticated and request.user is the owner, OR
-        # - the frontend provides ownerId/ownerGoogleId via query params that match the quiz owner
-        allowed = False
-
-        if getattr(request.user, "is_authenticated", False):
-            if quiz.owner_id == getattr(request.user, "id", None) or quiz.owner_id == getattr(request.user, "pk", None):
-                allowed = True
-
-        if not allowed:
-            owner_id = (
-                request.query_params.get("ownerId")
-                or request.query_params.get("owner_id")
-                or request.query_params.get("userId")
-                or request.query_params.get("user_id")
-            )
-            owner_google = (
-                request.query_params.get("ownerGoogleId")
-                or request.query_params.get("owner_google_id")
-                or request.query_params.get("ownerGoogle")
-                or request.query_params.get("owner_google")
+        if not getattr(request.user, "is_authenticated", False):
+            return Response(
+                {"detail": "Authentication required."},
+                status=status.HTTP_401_UNAUTHORIZED,
             )
 
-            if owner_id and str(quiz.owner_id) == str(owner_id):
-                allowed = True
-            elif owner_google:
-                try:
-                    if getattr(quiz.owner, "google_id", None) and str(quiz.owner.google_id) == str(owner_google):
-                        allowed = True
-                except Exception:
-                    # If quiz.owner is not present or has no google_id, skip
-                    pass
-
-        if not allowed:
+        if quiz.owner_id != getattr(request.user, "id", None):
             return Response({"detail": "You do not have permission to delete this quiz."}, status=status.HTTP_403_FORBIDDEN)
 
         quiz.delete()
@@ -288,9 +209,13 @@ class QuizAnswerView(APIView):
         }
         # Persist result (allow anonymous results)
         try:
+            is_authenticated = getattr(request.user, "is_authenticated", False)
+            external_user_id = None
+            if not is_authenticated:
+                external_user_id = request.data.get("userId") or request.data.get("user_id")
             UserQuizResult.objects.create(
-                user=(request.user if getattr(request.user, 'is_authenticated', False) else None),
-                external_user_id=request.data.get('userId') or request.data.get('user_id'),
+                user=(request.user if is_authenticated else None),
+                external_user_id=external_user_id,
                 quiz=quiz,
                 percentage=round(percentage),
                 correct_answers=correct,
@@ -324,9 +249,14 @@ class RankingView(APIView):
         total_questions = data.get("totalQuestions") or data.get("total_questions") or 0
         passed = bool(data.get("passed", percentage >= 50))
 
+        is_authenticated = getattr(request.user, "is_authenticated", False)
+        external_user_id = None
+        if not is_authenticated:
+            external_user_id = data.get("userId") or data.get("user_id")
+
         result = UserQuizResult.objects.create(
-            user=(request.user if getattr(request.user, 'is_authenticated', False) else None),
-            external_user_id=data.get('userId') or data.get('user_id'),
+            user=(request.user if is_authenticated else None),
+            external_user_id=external_user_id,
             quiz=quiz,
             percentage=int(percentage),
             correct_answers=int(correct_answers),
@@ -349,7 +279,6 @@ class RankingView(APIView):
         Query params:
         - type: 'global' (default), 'me', 'popular'
         - limit: integer limit for lists
-        - userId: external user id for 'me' lookup (optional)
         """
         qtype = request.query_params.get("type", "global")
         try:
@@ -380,25 +309,16 @@ class RankingView(APIView):
             return Response(payload, status=status.HTTP_200_OK)
 
         if qtype == "me":
-            # User stats for authenticated user or external userId
+            # User stats for authenticated user
             user = request.user if getattr(request.user, "is_authenticated", False) else None
-            external = request.query_params.get("userId") or request.query_params.get("user_id")
 
-            if user:
-                qs = UserQuizResult.objects.filter(user=user)
-            elif external:
-                qs = UserQuizResult.objects.filter(external_user_id=external)
-            else:
+            if not user:
                 return Response(
-                    {
-                        "totalQuizzes": 0,
-                        "averageScore": 0,
-                        "bestScore": 0,
-                        "totalCorrect": 0,
-                        "totalQuestions": 0,
-                    },
-                    status=status.HTTP_200_OK,
+                    {"detail": "Authentication required."},
+                    status=status.HTTP_401_UNAUTHORIZED,
                 )
+
+            qs = UserQuizResult.objects.filter(user=user)
 
             aggs = qs.aggregate(
                 total=Count("id"),

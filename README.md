@@ -11,11 +11,12 @@ Backend API dla aplikacji Quizify. Projekt oparty o Django + Django REST Framewo
 
 **Szybki start (lokalnie)**
 ```bash
-python -m venv venv
+python3 -m venv venv
 source venv/bin/activate
-pip install django djangorestframework drf-spectacular django-cors-headers
-python quizify/manage.py migrate
-python quizify/manage.py runserver
+pip install -r requirements.txt
+export GOOGLE_CLIENT_ID="twoj-google-client-id"
+python3 quizify/manage.py migrate
+python3 quizify/manage.py runserver
 ```
 
 Serwer startuje pod `http://localhost:8000`.
@@ -26,19 +27,28 @@ Serwer startuje pod `http://localhost:8000`.
 - ReDoc: `GET /api/redoc/`
 
 **Autoryzacja**
-- API uzywa sesji Django (cookies).
-- `POST /api/auth/login` zwraca `token: "session"` jako placeholder dla frontendu.
+- API uzywa JWT (access + refresh).
+- `POST /api/auth/login` zwraca `accessToken` i `refreshToken`.
+
+**Google login**
+- Ustaw `GOOGLE_CLIENT_ID` w env backendu (musi odpowiadac client id z frontendu).
+- Jesli masz `quizify-app/.env.local`, skopiuj wartosc `VITE_GOOGLE_CLIENT_ID`.
+- Backend automatycznie laduje `quizify/.env` (np. `GOOGLE_CLIENT_ID=...`).
+
+**Frontend (quizify-app)**
+- `VITE_API_BASE_URL=http://127.0.0.1:8000/api`
+- `VITE_GOOGLE_CLIENT_ID` musi pasowac do `GOOGLE_CLIENT_ID` w backendzie
 
 **Endpointy**
 
 Auth:
 - `POST /api/auth/login` - logowanie (email, password)
 - `POST /api/auth/register` - rejestracja (email, password, nick?)
-- `POST /api/auth/google` - logowanie/registracja Google (sub, email, name?, picture?, nick?)
+- `POST /api/auth/google` - logowanie/registracja Google (credential, nick?)
 - `POST /api/auth/logout` - wylogowanie (wymaga zalogowania)
 - `GET /api/auth/profile` - profil aktualnego uzytkownika (wymaga zalogowania)
 - `PUT /api/auth/profile` - aktualizacja profilu (nick lub username)
-- `POST /api/auth/refresh` - odswiezenie tokenu (zwraca "session")
+- `POST /api/auth/refresh` - odswiezenie tokenu (refreshToken)
 - `GET /api/auth/me` - alias profilu zalogowanego uzytkownika
 - `GET /api/me` - to samo co `auth/me`
 
@@ -74,10 +84,9 @@ Logowanie:
 }
 ```
 
-Tworzenie quizu (gdy brak sesji, wymagany ownerId lub ownerGoogleId):
+Tworzenie quizu (wymaga JWT w Authorization):
 ```json
 {
-  "ownerId": 1,
   "title": "Stolice Europy",
   "description": "Krotki test",
   "questions": [
@@ -109,7 +118,6 @@ Ranking (POST):
   "percentage": 80,
   "correctAnswers": 8,
   "totalQuestions": 10,
-  "passed": true,
-  "userId": "external-id"
+  "passed": true
 }
 ```
