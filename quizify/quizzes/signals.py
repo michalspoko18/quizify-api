@@ -1,5 +1,6 @@
 from django.db.models.signals import post_migrate
 from django.dispatch import receiver
+from django.contrib.auth import get_user_model
 
 from .models import Quiz, Question, Answer
 
@@ -13,7 +14,18 @@ def seed_quizzes(sender, **kwargs):
     if Quiz.objects.exists():
         return
 
+    User = get_user_model()
+    owner = User.objects.filter(email__iexact="demo@quizify.local").first()
+    if not owner:
+        owner = User.objects.create_user(
+            email="demo@quizify.local",
+            password="demo1234",
+            username="DemoUser",
+            auth_provider="local",
+        )
+
     quiz = Quiz.objects.create(
+        owner=owner,
         title="Podstawy HTML i CSS",
         description=(
             "Sprawdź swoją wiedzę z frontendu: semantyka HTML i "
