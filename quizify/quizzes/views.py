@@ -2,30 +2,77 @@ from django.shortcuts import get_object_or_404
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status, permissions
+from .serializers import QuizSerializer
 
 from .models import Quiz, UserQuizResult
 from django.db.models import Count, Avg, Sum, Max
 from django.contrib.auth import get_user_model
+from auth.serializers import UserSerializer
 
 
 class QuizListView(APIView):
-    permission_classes = [permissions.AllowAny]
+    permission_classes = [permissions.IsAuthenticatedOrReadOnly]
 
     def get(self, request):
-        quizzes = Quiz.objects.all()
+        quizzes = Quiz.objects.annotate(questions_count=Count("questions")).all()
         summarized = [
             {
                 "id": quiz.id,
                 "title": quiz.title,
                 "description": quiz.description,
+                "questionsCount": getattr(quiz, "questions_count", 0),
             }
             for quiz in quizzes
         ]
         return Response(summarized, status=status.HTTP_200_OK)
 
+    def post(self, request):
+        if not getattr(request.user, "is_authenticated", False):
+            return Response(
+                {"detail": "Authentication required."},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+
+        serializer = QuizSerializer(
+            data=request.data,
+            context={"user": request.user},
+        )
+
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        quiz = serializer.save()
+        return Response(QuizSerializer(quiz).data, status=status.HTTP_201_CREATED)
+
+
+class MyQuizListView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        owner = request.user
+
+        quizzes = (
+            Quiz.objects.filter(owner=owner)
+            .annotate(questions_count=Count("questions"))
+            .order_by("-created_at")
+        )
+
+        payload = [
+            {
+                "id": quiz.id,
+                "title": quiz.title,
+                "description": quiz.description,
+                "owner": quiz.owner_id,
+                "questionsCount": getattr(quiz, "questions_count", 0),
+            }
+            for quiz in quizzes
+        ]
+
+        return Response(payload, status=status.HTTP_200_OK)
+
 
 class QuizDetailView(APIView):
-    permission_classes = [permissions.AllowAny]
+    permission_classes = [permissions.IsAuthenticatedOrReadOnly]
 
     def get(self, request, quiz_id: int):
         quiz = get_object_or_404(Quiz.objects.prefetch_related(
@@ -53,6 +100,33 @@ class QuizDetailView(APIView):
         }
 
         return Response(payload, status=status.HTTP_200_OK)
+
+    def put(self, request, quiz_id: int):
+        quiz = get_object_or_404(Quiz.objects.prefetch_related("questions__answers"), pk=quiz_id)
+        # owner check
+        if not getattr(request.user, "is_authenticated", False) or quiz.owner_id != getattr(request.user, "id", None):
+            return Response({"detail": "You do not have permission to modify this quiz."}, status=status.HTTP_403_FORBIDDEN)
+
+        serializer = QuizSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        quiz = serializer.update(quiz, serializer.validated_data)
+        return Response(QuizSerializer(quiz).data, status=status.HTTP_200_OK)
+
+    def delete(self, request, quiz_id: int):
+        quiz = get_object_or_404(Quiz, pk=quiz_id)
+        if not getattr(request.user, "is_authenticated", False):
+            return Response(
+                {"detail": "Authentication required."},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+
+        if quiz.owner_id != getattr(request.user, "id", None):
+            return Response({"detail": "You do not have permission to delete this quiz."}, status=status.HTTP_403_FORBIDDEN)
+
+        quiz.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class QuizAnswerView(APIView):
@@ -135,9 +209,13 @@ class QuizAnswerView(APIView):
         }
         # Persist result (allow anonymous results)
         try:
+            is_authenticated = getattr(request.user, "is_authenticated", False)
+            external_user_id = None
+            if not is_authenticated:
+                external_user_id = request.data.get("userId") or request.data.get("user_id")
             UserQuizResult.objects.create(
-                user=(request.user if getattr(request.user, 'is_authenticated', False) else None),
-                external_user_id=request.data.get('userId') or request.data.get('user_id'),
+                user=(request.user if is_authenticated else None),
+                external_user_id=external_user_id,
                 quiz=quiz,
                 percentage=round(percentage),
                 correct_answers=correct,
@@ -171,9 +249,14 @@ class RankingView(APIView):
         total_questions = data.get("totalQuestions") or data.get("total_questions") or 0
         passed = bool(data.get("passed", percentage >= 50))
 
+        is_authenticated = getattr(request.user, "is_authenticated", False)
+        external_user_id = None
+        if not is_authenticated:
+            external_user_id = data.get("userId") or data.get("user_id")
+
         result = UserQuizResult.objects.create(
-            user=(request.user if getattr(request.user, 'is_authenticated', False) else None),
-            external_user_id=data.get('userId') or data.get('user_id'),
+            user=(request.user if is_authenticated else None),
+            external_user_id=external_user_id,
             quiz=quiz,
             percentage=int(percentage),
             correct_answers=int(correct_answers),
@@ -196,7 +279,6 @@ class RankingView(APIView):
         Query params:
         - type: 'global' (default), 'me', 'popular'
         - limit: integer limit for lists
-        - userId: external user id for 'me' lookup (optional)
         """
         qtype = request.query_params.get("type", "global")
         try:
@@ -227,25 +309,16 @@ class RankingView(APIView):
             return Response(payload, status=status.HTTP_200_OK)
 
         if qtype == "me":
-            # User stats for authenticated user or external userId
+            # User stats for authenticated user
             user = request.user if getattr(request.user, "is_authenticated", False) else None
-            external = request.query_params.get("userId") or request.query_params.get("user_id")
 
-            if user:
-                qs = UserQuizResult.objects.filter(user=user)
-            elif external:
-                qs = UserQuizResult.objects.filter(external_user_id=external)
-            else:
+            if not user:
                 return Response(
-                    {
-                        "totalQuizzes": 0,
-                        "averageScore": 0,
-                        "bestScore": 0,
-                        "totalCorrect": 0,
-                        "totalQuestions": 0,
-                    },
-                    status=status.HTTP_200_OK,
+                    {"detail": "Authentication required."},
+                    status=status.HTTP_401_UNAUTHORIZED,
                 )
+
+            qs = UserQuizResult.objects.filter(user=user)
 
             aggs = qs.aggregate(
                 total=Count("id"),
@@ -270,7 +343,11 @@ class RankingView(APIView):
         # We'll build a map keyed by a stable identifier
         results = (
             UserQuizResult.objects.values("external_user_id", "user")
-            .annotate(quizzes_completed=Count("id"), average_score=Avg("percentage"), total_score=Sum("percentage"))
+            .annotate(
+                quizzes_completed=Count("id"),
+                average_score=Avg("percentage"),
+                total_score=Sum("percentage"),
+            )
             .order_by("-average_score", "-total_score")
         )
 
@@ -280,16 +357,30 @@ class RankingView(APIView):
                 break
             ext = item.get("external_user_id")
             user_pk = item.get("user")
+
+            userId = None
+            userName = None
+            userNick = None
+
             if ext:
+                # External identifier (e.g. Google `sub`) — try to resolve to a local User
                 userId = ext
-                userName = None
-                userNick = None
+                try:
+                    u = User.objects.filter(google_id=ext).first()
+                    if u:
+                        userName = getattr(u, "email", None) or getattr(u, "username", None)
+                        userNick = UserSerializer(u).data.get("nick")
+                except Exception:
+                    userName = None
+                    userNick = None
             elif user_pk:
-                userId = f"user:{user_pk}"
+                # Use plain string PK to match frontend `store.sub`
+                userId = str(user_pk)
                 try:
                     u = User.objects.filter(pk=user_pk).first()
-                    userName = getattr(u, "username", None) if u else None
-                    userNick = getattr(u, "nick", None) if u else None
+                    if u:
+                        userName = getattr(u, "email", None) or getattr(u, "username", None)
+                        userNick = UserSerializer(u).data.get("nick")
                 except Exception:
                     userName = None
                     userNick = None
